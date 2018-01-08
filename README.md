@@ -4,3 +4,253 @@
 
 
 ## 跨多校区的云平台构建，基于vSphere ，利用vCenter管理虚拟主机
+
+
+
+###  简单介绍
+
+##东区有线网络结构说明
+###1.整体结构
+东区实验室共有8个房间，核心交换机、路由器、防火墙、存储设备和服务器集中放置在08A510房间。
+#####房间名称、VLAN和网络地址的对应关系
+
+
+|网络名称                 |对应VLAN|网络地址                      |网关                   |
+|--------                |:------:|:--------                    |:---                   |
+|08A501                  |501     |192.168.1.0/24               |192.168.1.1            |
+|08A502&08A504           |504     |192.168.4.0/24               |192.168.4.1            |
+|08A503                  |503     |192.168.3.0/24               |192.168.3.1            |
+|08A505                  |505     |192.168.5.0/24               |192.168.5.1            |
+|08A506                  |506     |192.168.6.0/24               |192.168.6.1            |
+|08A507&08A508           |503,508 |192.168.7.0/24,192.168.8.1/24|192.168.7.1,192.168.8.1|
+|08A509                  |509     |192.168.9.0/24               |192.168.9.1            |
+|08A511                  |511     |192.168.11.0/24              |192.168.11.1           |
+
+
+###2.主要设备的配置说明
+####1.防火墙
+
+- .外网接口，与校园网连接
+
+```
+interface ethernet0/1
+  zone  "untrust"
+  ip address 202.196.174.10 255.255.255.0
+  qos-profile 2nd-level input "prof_ip_ethernet0/1_input"
+  qos-profile 2nd-level output "prof_ip_ethernet0/1_output"
+  manage ssh                                                        
+  manage ping
+exit
+```
+
+- .内网接口，与交换机和路由器连接
+
+```
+interface ethernet0/0
+  zone  "trust"
+  ip address 192.168.10.2 255.255.255.0
+  manage ssh
+  manage telnet
+  manage ping
+  manage snmp
+  manage http
+  manage https
+exit
+```
+
+- .路由部分配置，使用OSPF
+
+```
+router ospf
+router-id 10.10.10.10
+default-information originate              
+network 192.168.10.0/24 area 0.0.0.0
+exit
+```
+
+####1.核心交换机配置
+
+- .与防火墙、VPN路由器相连接的网络接口
+
+```
+interface Vlanif20
+ ip address 192.168.20.1 255.255.255.0
+ dhcp select relay
+ dhcp relay server-select dhcpserver
+```
+
+- .IBGP设置
+
+```
+bgp 10
+ router-id 1.1.1.1
+ peer 192.168.10.3 as-number 10
+ peer 192.168.10.8 as-number 10
+ peer 192.168.10.9 as-number 10
+ #
+ ipv4-family unicast
+  undo synchronization
+  peer 192.168.10.3 enable
+  peer 192.168.10.8 enable
+  peer 192.168.10.9 enable
+#
+```
+
+- .内部路由设置
+
+```
+ospf 100
+ silent-interface Vlanif504
+ silent-interface Vlanif505               
+ silent-interface Vlanif506
+ silent-interface Vlanif507
+ silent-interface Vlanif508
+ silent-interface Vlanif509
+ silent-interface Vlanif511
+ silent-interface Vlanif503
+ area 0.0.0.0
+  network 192.168.1.0 0.0.0.255
+  network 192.168.3.0 0.0.0.255
+  network 192.168.4.0 0.0.0.255
+  network 192.168.5.0 0.0.0.255
+  network 192.168.6.0 0.0.0.255
+  network 192.168.7.0 0.0.0.255
+  network 192.168.8.0 0.0.0.255
+  network 192.168.9.0 0.0.0.255
+  network 192.168.10.0 0.0.0.255
+  network 192.168.11.0 0.0.0.255
+  network 192.168.15.0 0.0.0.255
+  network 192.168.20.0 0.0.0.255
+```
+
+- .链路聚合设置
+
+```
+interface GigabitEthernet0/0/23
+ eth-trunk 1
+ lacp priority 100                        
+#
+interface GigabitEthernet0/0/24
+ eth-trunk 1
+ lacp priority 100
+interface Eth-Trunk1
+ port link-type trunk
+ port trunk allow-pass vlan 2 to 4094
+ mode lacp
+ max bandwidth-affected-linknumber 2
+```
+
+####2.点对点VPN路由器配置(内网以太网接口的IP：192.168.10.8)
+
+- .隧道接口
+
+```
+interface Tunnel1
+ ip address 172.16.1.1 255.255.255.0
+ no ip redirects
+ ip mtu 1300
+ keepalive 2 2
+ tunnel source FastEthernet0/0
+ tunnel destination 202.196.163.199
+
+interface Tunnel2
+ ip address 172.16.2.1 255.255.255.0
+ keepalive 2 2
+ tunnel source FastEthernet0/0
+ tunnel destination 202.196.166.180
+!
+```
+
+- .EBGP和IBGP配置
+
+```
+router bgp 10
+ bgp router-id 8.8.8.8
+ bgp log-neighbor-changes
+ bgp redistribute-internal
+ aggregate-address 192.168.0.0 255.255.224.0 summary-only
+ redistribute ospf 200 route-map myfilter
+ neighbor 172.16.1.2 remote-as 20
+ neighbor 172.16.2.2 remote-as 30
+ neighbor 192.168.10.1 remote-as 10
+ neighbor 192.168.10.1 next-hop-self
+ neighbor 192.168.10.3 remote-as 10
+ neighbor 192.168.10.3 next-hop-self
+ neighbor 192.168.10.9 remote-as 10
+ neighbor 192.168.10.9 next-hop-self
+```
+
+- .内部路由配置
+
+```
+router ospf 200
+ router-id 8.8.8.8
+ network 192.168.10.0 0.0.0.255 area 0
+```
+
+- .路由聚合与重分布
+
+```
+ aggregate-address 192.168.0.0 255.255.224.0 summary-only
+ redistribute ospf 200 route-map myfilter
+```
+
+####3.点对点VPN路由器配置(内网以太网接口的IP：192.168.10.9)
+
+- .隧道接口
+
+```
+interface Tunnel3
+ ip address 172.16.3.1 255.255.255.0
+ keepalive 2 2
+ tunnel source FastEthernet0/0
+ tunnel destination 202.196.163.194
+```
+
+- .EBGP和IBGP配置
+
+```
+router bgp 10
+ bgp router-id 9.9.9.9
+ bgp log-neighbor-changes
+ neighbor 172.16.3.2 remote-as 20
+ neighbor 192.168.10.1 remote-as 10
+ neighbor 192.168.10.1 next-hop-self
+ neighbor 192.168.10.3 remote-as 10
+ neighbor 192.168.10.3 next-hop-self
+ neighbor 192.168.10.8 remote-as 10
+ neighbor 192.168.10.8 next-hop-self
+```
+
+- .内部路由配置
+
+```
+router ospf 200
+ router-id 9.9.9.9
+ network 192.168.10.0 0.0.0.255 area 0
+```
+
+####4.服务器交换机配置
+
+- .该交换机虽为三层交换机，但仅使用二层功能。该交换机通过链路聚合与核心交换机相连
+
+```
+interface GigabitEthernet0/0/23
+ eth-trunk 1
+ lacp priority 100
+#
+interface GigabitEthernet0/0/24           
+ eth-trunk 1
+ lacp priority 100
+interface Eth-Trunk1
+ port link-type trunk
+ port trunk allow-pass vlan 2 to 4094
+ mode lacp
+```
+
+- .该交换机与三台服务器相连接，由于这几个服务器都有四个网络接口，因此每台服务器都有两根网线连接到该交换机。
+其中一根网线对应的交换机端口为Access模式，另一根对应的交换机端口是Trunk模式。采用Trunk模式的作用是该端口与服务器中
+ESXI操作系统中的虚拟交换机连接，已达到灵活的目的。
+
+
+
